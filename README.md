@@ -20,7 +20,7 @@ This lets your agents continuously improve, personalize their responses, and mai
 ## Installation
 
 ```bash
-pip install -U langmem
+npm install langmem-js @langchain/langgraph @langchain/core
 ```
 
 Configure your environment with an API key for your favorite LLM provider:
@@ -33,52 +33,60 @@ export ANTHROPIC_API_KEY="sk-..."  # Or another supported LLM provider
 
 Here's how to create an agent that actively manages its own long-term memory in just a few lines:
 
-```python
-# Import core components (1)
-from langgraph.prebuilt import create_react_agent
-from langgraph.store.memory import InMemoryStore
-from langmem import create_manage_memory_tool, create_search_memory_tool
+```typescript
+// Import core components (1)
+import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import { InMemoryStore } from "@langchain/langgraph";
+import { createManageMemoryTool, createSearchMemoryTool } from "langmem-js";
+import { ChatAnthropic } from "@langchain/anthropic";
 
-# Set up storage (2)
-store = InMemoryStore(
-    index={
-        "dims": 1536,
-        "embed": "openai:text-embedding-3-small",
-    }
-)
+// Set up storage (2)
+const store = new InMemoryStore({
+  index: {
+    dims: 1536,
+    embed: "openai:text-embedding-3-small",
+  }
+});
 
-# Create an agent with memory capabilities (3)
-agent = create_react_agent(
-    "anthropic:claude-3-5-sonnet-latest",
-    tools=[
-        # Memory tools use LangGraph's BaseStore for persistence (4)
-        create_manage_memory_tool(namespace=("memories",)),
-        create_search_memory_tool(namespace=("memories",)),
-    ],
-    store=store,
-)
+const model = new ChatAnthropic({
+  model: "claude-3-5-sonnet-latest",
+  temperature: 0
+});
+
+// Create an agent with memory capabilities (3)
+const agent = createReactAgent({
+  llm: model,
+  tools: [
+    // Memory tools use LangGraph's BaseStore for persistence (4)
+    createManageMemoryTool({ namespace: ["memories"] }),
+    createSearchMemoryTool({ namespace: ["memories"] }),
+  ],
+  store,
+});
 ```
 
-1. The memory tools work in any LangGraph app. Here we use [`create_react_agent`](https://langchain-ai.github.io/langgraph/reference/prebuilt/#langgraph.prebuilt.create_react_agent) to run an LLM with tools, but you can add these tools to your existing agents or build [custom memory systems](concepts/conceptual_guide.md#functional-core) without agents.
+1. The memory tools work in any LangGraph app. Here we use [`createReactAgent`](https://langchain-ai.github.io/langgraphjs/reference/modules/prebuilt.html#createReactAgent) to run an LLM with tools, but you can add these tools to your existing agents or build custom memory systems without agents.
 
-2. [`InMemoryStore`](https://langchain-ai.github.io/langgraph/reference/store/#langgraph.store.memory.InMemoryStore) keeps memories in process memory—they'll be lost on restart. For production, use the [AsyncPostgresStore](https://langchain-ai.github.io/langgraph/reference/store/#langgraph.store.postgres.AsyncPostgresStore) or a similar DB-backed store to persist memories across server restarts.
+2. [`InMemoryStore`](https://langchain-ai.github.io/langgraphjs/reference/classes/index.InMemoryStore.html) keeps memories in process memory—they'll be lost on restart.
 
-3. The memory tools ([`create_manage_memory_tool`](reference/tools.md#langmem.create_manage_memory_tool) and [`create_search_memory_tool`](reference/tools.md#langmem.create_search_memory_tool)) let you control what gets stored. The agent extracts key information from conversations, maintains memory consistency, and knows when to search past interactions. See [Memory Tools](guides/memory_tools.md) for configuration options.
+3. The memory tools ([`createManageMemoryTool`](reference/tools.md#langmem.create_manage_memory_tool) and [`createSearchMemoryTool`](reference/tools.md#langmem.create_search_memory_tool)) let you control what gets stored.
 
 Then use the agent:
 
-```python
-# Store a new memory (1)
-agent.invoke(
-    {"messages": [{"role": "user", "content": "Remember that I prefer dark mode."}]}
-)
+```typescript
+// Store a new memory (1)
+await agent.invoke(
+  { messages: [{ role: "user", content: "Remember that I prefer dark mode." }] },
+  { configurable: { thread_id: "1" } }
+);
 
-# Retrieve the stored memory (2)
-response = agent.invoke(
-    {"messages": [{"role": "user", "content": "What are my lighting preferences?"}]}
-)
-print(response["messages"][-1].content)
-# Output: "You've told me that you prefer dark mode."
+// Retrieve the stored memory (2)
+const response = await agent.invoke(
+  { messages: [{ role: "user", content: "What are my lighting preferences?" }] },
+  { configurable: { thread_id: "2" } }
+);
+console.log(response.messages[response.messages.length - 1].content);
+// Output: "You've told me that you prefer dark mode."
 ```
 
 1. The agent gets to decide what and when to store the memory. No special commands needed—just chat normally and the agent uses [`create_manage_memory_tool`](reference/tools.md#langmem.create_manage_memory_tool) to store relevant details.
