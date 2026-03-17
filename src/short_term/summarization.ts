@@ -4,9 +4,11 @@ import {
   SystemMessage,
   HumanMessage,
   ToolMessage,
+  RemoveMessage,
   type BaseMessage,
 } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
+import { REMOVE_ALL_MESSAGES } from "@langchain/langgraph";
 
 export interface RunningSummary {
   summary: string;
@@ -31,7 +33,35 @@ export type TokenCounter = (
   messages: (BaseMessage | Record<string, unknown>)[]
 ) => number;
 
-function countTokensApproximately(
+function trimMessagesForSummarization(
+  messages: BaseMessage[],
+  maxTokens: number,
+  tokenCounter: TokenCounter
+): BaseMessage[] {
+  // Keep the last maxTokens worth of messages from the end
+  let tokens = 0;
+  let startIdx = messages.length;
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msgTokens = tokenCounter([messages[i]]);
+    if (tokens + msgTokens > maxTokens) {
+      break;
+    }
+    tokens += msgTokens;
+    startIdx = i;
+  }
+
+  let trimmed = messages.slice(startIdx);
+
+  // Ensure starts on HumanMessage (equivalent to start_on="human")
+  while (trimmed.length > 0 && !(trimmed[0] instanceof HumanMessage)) {
+    trimmed = trimmed.slice(1);
+  }
+
+  return trimmed;
+}
+
+export function countTokensApproximately(
   messages: (BaseMessage | Record<string, unknown>)[]
 ): number {
   // Approximate: 1 token ~= 4 characters
@@ -287,10 +317,21 @@ export async function summarizeMessages(
   let newRunningSummary = runningSummary;
 
   if (preprocessed.messagesToSummarize.length > 0) {
+    // Trim messages if they exceed maxTokensToSummarize (to avoid exceeding context window)
+    let messagesToSendToModel = preprocessed.messagesToSummarize;
+    if (preprocessed.nTokensToSummarize > preprocessed.maxTokensToSummarize) {
+      const trimmed = trimMessagesForSummarization(
+        preprocessed.messagesToSummarize,
+        preprocessed.maxTokensToSummarize,
+        tokenCounter
+      );
+      if (trimmed.length > 0) {
+        messagesToSendToModel = trimmed;
+      }
+    }
+
     // Build summary prompt
-    const summaryMessages: (BaseMessage | Record<string, unknown>)[] = [
-      ...preprocessed.messagesToSummarize,
-    ];
+    const summaryMessages: BaseMessage[] = [...messagesToSendToModel];
 
     if (runningSummary) {
       summaryMessages.push(
@@ -304,9 +345,7 @@ export async function summarizeMessages(
       );
     }
 
-    const summaryResponse = await model.invoke(
-      summaryMessages as BaseMessage[]
-    );
+    const summaryResponse = await model.invoke(summaryMessages);
     const summaryContent =
       typeof summaryResponse.content === "string"
         ? summaryResponse.content
@@ -316,6 +355,7 @@ export async function summarizeMessages(
       ? new Set(runningSummary.summarizedMessageIds)
       : new Set<string>();
 
+    // Track ALL messagesToSummarize IDs (not just the trimmed subset)
     const newSummarizedIds = new Set([
       ...summarizedIds,
       ...preprocessed.messagesToSummarize
@@ -399,6 +439,14 @@ export class SummarizationNode {
         ...context,
         running_summary: result.runningSummary,
       };
+      // When input and output keys are the same, prepend a RemoveMessage to
+      // clear the existing messages before writing the summarized ones
+      if (this.options.inputMessagesKey === this.options.outputMessagesKey) {
+        update[this.options.outputMessagesKey] = [
+          new RemoveMessage({ id: REMOVE_ALL_MESSAGES }),
+          ...(update[this.options.outputMessagesKey] as BaseMessage[]),
+        ];
+      }
     }
     return update;
   }
